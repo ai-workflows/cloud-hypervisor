@@ -156,7 +156,9 @@ fn create_uffd() -> Result<CreatedUffd, UffdHandoffError> {
         .user_mode_only(true)
         .require_features(FeatureFlags::empty())
         .require_ioctls(IoctlFlags::empty());
-    let uffd = user_mode_only.create().map_err(UffdHandoffError::UffdCreate)?;
+    let uffd = user_mode_only
+        .create()
+        .map_err(UffdHandoffError::UffdCreate)?;
     Ok(CreatedUffd {
         uffd,
         user_mode_only: true,
@@ -365,7 +367,11 @@ mod tests {
 
         // SAFETY: msg and buffers are valid for the call.
         let received = unsafe { libc::recvmsg(stream.as_raw_fd(), &mut msg, 0) };
-        assert!(received > 0, "recvmsg failed: {}", std::io::Error::last_os_error());
+        assert!(
+            received > 0,
+            "recvmsg failed: {}",
+            std::io::Error::last_os_error()
+        );
 
         // SAFETY: kernel-initialized control buffer.
         let cmsg = unsafe { libc::CMSG_FIRSTHDR(&msg) };
@@ -554,16 +560,12 @@ mod tests {
             let event = uffd.read_event().unwrap().unwrap();
             match event {
                 userfaultfd::Event::Pagefault { addr, .. } => {
-                    let page = vec![fill_byte; value["regions"][0]["len"].as_u64().unwrap() as usize];
+                    let page =
+                        vec![fill_byte; value["regions"][0]["len"].as_u64().unwrap() as usize];
                     // SAFETY: copying one full page into the registered range.
                     unsafe {
-                        uffd.copy(
-                            page.as_ptr() as *mut libc::c_void,
-                            addr,
-                            page.len(),
-                            true,
-                        )
-                        .unwrap();
+                        uffd.copy(page.as_ptr() as *mut libc::c_void, addr, page.len(), true)
+                            .unwrap();
                     }
                 }
                 other => panic!("unexpected uffd event: {other:?}"),
