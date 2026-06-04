@@ -208,6 +208,12 @@ pub struct MemoryConfig {
     pub zones: Option<Vec<MemoryZoneConfig>>,
     #[serde(default = "default_memoryconfig_thp")]
     pub thp: bool,
+    /// Meridian cooperation seam: when set, register all guest RAM with one
+    /// userfaultfd descriptor at creation time and hand the descriptor plus
+    /// region metadata to the external fault-servicing process listening on
+    /// this Unix socket before the VM boots.
+    #[serde(default)]
+    pub uffd_handoff_socket: Option<PathBuf>,
 }
 
 pub const DEFAULT_MEMORY_MB: u64 = 512;
@@ -226,6 +232,7 @@ impl Default for MemoryConfig {
             prefault: false,
             zones: None,
             thp: true,
+            uffd_handoff_socket: None,
         }
     }
 }

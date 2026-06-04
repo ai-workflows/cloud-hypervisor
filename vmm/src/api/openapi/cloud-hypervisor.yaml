@@ -834,6 +834,12 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/MemoryZoneConfig"
+        uffd_handoff_socket:
+          type: string
+          description:
+            Unix socket path of an external page-fault servicing process that
+            receives a userfaultfd descriptor registered over all guest RAM
+            before the VM boots (Meridian cooperation seam).
 
     TokenBucket:
       required:

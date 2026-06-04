@@ -199,6 +199,31 @@ pub enum Error {
     #[error("Failed to create shared file")]
     SharedFileCreate(#[source] io::Error),
 
+    /// Guest RAM region is not file-backed, so it cannot participate in the
+    /// userfaultfd handoff cooperation seam.
+    #[error(
+        "uffd_handoff_socket requires every guest RAM region to be backed by a shared file \
+         mapping; found a region without file backing"
+    )]
+    UffdHandoffRegionNotFileBacked,
+
+    /// Guest RAM region is not mapped MAP_SHARED, so external page-fault
+    /// servicing cannot observe a coherent backing.
+    #[error(
+        "uffd_handoff_socket requires every guest RAM region to be mapped shared; \
+         found a private mapping"
+    )]
+    UffdHandoffRegionNotShared,
+
+    /// Failed to inspect the backing file of a guest RAM region for handoff
+    /// identity metadata.
+    #[error("Failed to inspect guest RAM backing file metadata for uffd handoff")]
+    UffdHandoffBackingFileMetadata(#[source] io::Error),
+
+    /// The userfaultfd registration/handoff itself failed.
+    #[error("userfaultfd handoff failed")]
+    UffdHandoff(#[source] crate::uffd_handoff::UffdHandoffError),
+
     /// Failed to set shared file length.
     #[error("Failed to set shared file length")]
     SharedFileSetLen(#[source] io::Error),
@@ -1161,6 +1186,48 @@ impl MemoryManager {
         };
 
         let guest_memory = GuestMemoryAtomic::new(guest_memory);
+
+        // Meridian cooperation seam: register all guest RAM with one
+        // userfaultfd descriptor and hand it to the external fault-servicing
+        // process before any payload is loaded into guest memory. Every
+        // failure here is deterministic and fails VM creation.
+        if let Some(socket_path) = &config.uffd_handoff_socket {
+            use std::os::unix::fs::MetadataExt;
+
+            let memory = guest_memory.memory();
+            let mut sources = Vec::new();
+            for region in memory.iter() {
+                let file_offset = region
+                    .file_offset()
+                    .ok_or(Error::UffdHandoffRegionNotFileBacked)?;
+                if region.flags() & libc::MAP_SHARED == 0 {
+                    return Err(Error::UffdHandoffRegionNotShared);
+                }
+                let metadata = file_offset
+                    .file()
+                    .metadata()
+                    .map_err(Error::UffdHandoffBackingFileMetadata)?;
+                sources.push(crate::uffd_handoff::UffdHandoffRegionSource {
+                    guest_phys_addr: region.start_addr().raw_value(),
+                    len: region.len(),
+                    host_virt_addr: region.as_ptr() as usize,
+                    file_offset: file_offset.start(),
+                    backing_dev: metadata.dev(),
+                    backing_ino: metadata.ino(),
+                });
+            }
+
+            let handoff = crate::uffd_handoff::perform_uffd_handoff(&sources, socket_path)
+                .map_err(Error::UffdHandoff)?;
+            info!(
+                "uffd handoff complete: socket={}, regions={}, user_mode_only={}, \
+                 registered_write_protect={}",
+                socket_path.display(),
+                handoff.regions.len(),
+                handoff.user_mode_only,
+                handoff.registered_write_protect
+            );
+        }
 
         let allocator = Arc::new(Mutex::new(
             SystemAllocator::new(

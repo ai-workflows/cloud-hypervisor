@@ -183,6 +183,9 @@ pub enum ValidationError {
     /// Missing file value for console
     #[error("Path missing when using file console mode")]
     ConsoleFileMissing,
+    /// userfaultfd handoff cannot cover hotplugged memory
+    #[error("uffd_handoff_socket is incompatible with memory hotplug")]
+    UffdHandoffWithMemoryHotplug,
     /// Missing socket path for console
     #[error("Path missing when using socket console mode")]
     ConsoleSocketPathMissing,
@@ -843,7 +846,8 @@ impl MemoryConfig {
             .add("hugepages")
             .add("hugepage_size")
             .add("prefault")
-            .add("thp");
+            .add("thp")
+            .add("uffd_handoff_socket");
         parser.parse(memory).map_err(Error::ParseMemory)?;
 
         let size = parser
@@ -892,6 +896,7 @@ impl MemoryConfig {
             .map_err(Error::ParseMemory)?
             .unwrap_or(Toggle(true))
             .0;
+        let uffd_handoff_socket = parser.get("uffd_handoff_socket").map(PathBuf::from);
 
         let zones: Option<Vec<MemoryZoneConfig>> = if let Some(memory_zones) = &memory_zones {
             let mut zones = Vec::new();
@@ -979,6 +984,7 @@ impl MemoryConfig {
             prefault,
             zones,
             thp,
+            uffd_handoff_socket,
         })
     }
 
@@ -2667,6 +2673,20 @@ impl VmConfig {
             ));
         }
 
+        if self.memory.uffd_handoff_socket.is_some() {
+            let zone_hotplug = self.memory.zones.as_ref().is_some_and(|zones| {
+                zones
+                    .iter()
+                    .any(|zone| zone.hotplug_size.is_some() || zone.hotplugged_size.is_some())
+            });
+            if self.memory.hotplug_size.is_some()
+                || self.memory.hotplugged_size.is_some()
+                || zone_hotplug
+            {
+                return Err(ValidationError::UffdHandoffWithMemoryHotplug);
+            }
+        }
+
         if self.cpus.max_vcpus > MAX_SUPPORTED_CPUS {
             // Note: historically, Cloud Hypervisor did not support more than 255(254 on x64)
             // vCPUs: self.cpus.max_vcpus was of type u8, so 255 was the maximum;
@@ -4349,6 +4369,7 @@ mod unit_tests {
                 prefault: false,
                 zones: None,
                 thp: true,
+                uffd_handoff_socket: None,
             },
             payload: Some(PayloadConfig {
                 kernel: Some(PathBuf::from("/path/to/kernel")),

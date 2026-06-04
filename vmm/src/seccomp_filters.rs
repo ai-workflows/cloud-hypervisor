@@ -691,6 +691,9 @@ fn vmm_thread_rules(
         (libc::SYS_unlink, vec![]),
         #[cfg(target_arch = "aarch64")]
         (libc::SYS_unlinkat, vec![]),
+        // Meridian cooperation seam: userfaultfd registration/handoff for
+        // externally serviced guest-memory page faults.
+        (libc::SYS_userfaultfd, vec![]),
         (libc::SYS_wait4, vec![]),
         (libc::SYS_write, vec![]),
         (libc::SYS_writev, vec![]),

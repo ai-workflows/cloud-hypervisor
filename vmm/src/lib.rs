@@ -85,6 +85,7 @@ mod pci_segment;
 pub mod seccomp_filters;
 mod serial_manager;
 mod sigwinch_listener;
+pub mod uffd_handoff;
 pub mod vm;
 pub mod vm_config;
 
@@ -2421,6 +2422,7 @@ mod unit_tests {
                 prefault: false,
                 zones: None,
                 thp: true,
+                uffd_handoff_socket: None,
             },
             payload: Some(PayloadConfig {
                 kernel: Some(PathBuf::from("/path/to/kernel")),

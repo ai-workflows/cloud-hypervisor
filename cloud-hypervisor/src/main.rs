@@ -339,7 +339,8 @@ fn get_cli_options_sorted(
                      hotplug_method=acpi|virtio-mem,\
                      hotplug_size=<hotpluggable_memory_size>,\
                      hotplugged_size=<hotplugged_memory_size>,\
-                     prefault=on|off,thp=on|off\"",
+                     prefault=on|off,thp=on|off,\
+                     uffd_handoff_socket=<path>\"",
             )
             .default_value(default_memory)
             .group("vm-config"),
@@ -976,6 +977,7 @@ mod unit_tests {
                 prefault: false,
                 zones: None,
                 thp: true,
+                uffd_handoff_socket: None,
             },
             payload: Some(PayloadConfig {
                 kernel: Some(PathBuf::from("/path/to/kernel")),
