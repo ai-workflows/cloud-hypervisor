@@ -113,9 +113,13 @@ const BLKDISCARD: u64 = 0x1277; // _IO(0x12, 119)
 const BLKZEROOUT: u64 = 0x127f; // _IO(0x12, 127)
 
 // Meridian cooperation seam: userfaultfd control ioctls (type 0xAA), needed so
-// the VMM thread can run UFFDIO_API / UFFDIO_REGISTER while setting up the
-// uffd handoff under the active seccomp filter. Values are architecture
-// independent. See linux/userfaultfd.h.
+// the VMM thread can run the uffd handoff under the active seccomp filter.
+// Values are architecture independent. See linux/userfaultfd.h.
+//
+// The `userfaultfd` crate creates the context by opening /dev/userfaultfd and
+// issuing USERFAULTFD_IOC_NEW (it does not use the userfaultfd(2) syscall), so
+// that ioctl must be allowed first, followed by the per-context UFFDIO_* ones.
+const USERFAULTFD_IOC_NEW: u64 = 0x0000_aa00;
 const UFFDIO_API: u64 = 0xc018_aa3f;
 const UFFDIO_REGISTER: u64 = 0xc020_aa00;
 const UFFDIO_UNREGISTER: u64 = 0x8010_aa01;
@@ -278,6 +282,7 @@ fn create_vmm_ioctl_seccomp_rule_common(
         and![Cond::new(1, ArgLen::Dword, Eq, BLKDISCARD as _)?],
         and![Cond::new(1, ArgLen::Dword, Eq, BLKZEROOUT as _)?],
         // Meridian uffd handoff cooperation seam.
+        and![Cond::new(1, ArgLen::Dword, Eq, USERFAULTFD_IOC_NEW as _)?],
         and![Cond::new(1, ArgLen::Dword, Eq, UFFDIO_API as _)?],
         and![Cond::new(1, ArgLen::Dword, Eq, UFFDIO_REGISTER as _)?],
         and![Cond::new(1, ArgLen::Dword, Eq, UFFDIO_UNREGISTER as _)?],
