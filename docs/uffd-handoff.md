@@ -60,7 +60,10 @@ Patched surface:
 - `vmm/src/memory_manager.rs` (invoke handoff after guest memory creation)
 - `vmm/src/vm_config.rs`, `vmm/src/config.rs` (config field, parsing,
   validation)
-- `vmm/src/seccomp_filters.rs` (`userfaultfd` syscall + `UFFDIO_*` control
-  ioctls on the vmm thread, since registration runs under the active filter)
+- `vmm/src/seccomp_filters.rs` (the vmm thread runs the uffd handoff under its
+  active seccomp filter, so it must allow the `userfaultfd` syscall plus the
+  `USERFAULTFD_IOC_NEW` and `UFFDIO_*` ioctls; the `userfaultfd` crate creates
+  its context via `/dev/userfaultfd` + `USERFAULTFD_IOC_NEW`, not the
+  `userfaultfd(2)` syscall)
 - `cloud-hypervisor/src/main.rs`, `vmm/src/api/openapi/cloud-hypervisor.yaml`
   (help/API surface)
