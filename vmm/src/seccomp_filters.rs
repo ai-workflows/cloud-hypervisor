@@ -112,6 +112,18 @@ mod kvm {
 const BLKDISCARD: u64 = 0x1277; // _IO(0x12, 119)
 const BLKZEROOUT: u64 = 0x127f; // _IO(0x12, 127)
 
+// Meridian cooperation seam: userfaultfd control ioctls (type 0xAA), needed so
+// the VMM thread can run UFFDIO_API / UFFDIO_REGISTER while setting up the
+// uffd handoff under the active seccomp filter. Values are architecture
+// independent. See linux/userfaultfd.h.
+const UFFDIO_API: u64 = 0xc018_aa3f;
+const UFFDIO_REGISTER: u64 = 0xc020_aa00;
+const UFFDIO_UNREGISTER: u64 = 0x8010_aa01;
+const UFFDIO_WAKE: u64 = 0x8010_aa02;
+const UFFDIO_COPY: u64 = 0xc028_aa03;
+const UFFDIO_ZEROPAGE: u64 = 0xc020_aa04;
+const UFFDIO_WRITEPROTECT: u64 = 0xc018_aa06;
+
 // MSHV IOCTL code. This is unstable until the kernel code has been declared stable.
 #[cfg(feature = "mshv")]
 use hypervisor::mshv::mshv_ioctls::*;
@@ -265,6 +277,14 @@ fn create_vmm_ioctl_seccomp_rule_common(
         and![Cond::new(1, ArgLen::Dword, Eq, BLKIOOPT as _)?],
         and![Cond::new(1, ArgLen::Dword, Eq, BLKDISCARD as _)?],
         and![Cond::new(1, ArgLen::Dword, Eq, BLKZEROOUT as _)?],
+        // Meridian uffd handoff cooperation seam.
+        and![Cond::new(1, ArgLen::Dword, Eq, UFFDIO_API as _)?],
+        and![Cond::new(1, ArgLen::Dword, Eq, UFFDIO_REGISTER as _)?],
+        and![Cond::new(1, ArgLen::Dword, Eq, UFFDIO_UNREGISTER as _)?],
+        and![Cond::new(1, ArgLen::Dword, Eq, UFFDIO_WAKE as _)?],
+        and![Cond::new(1, ArgLen::Dword, Eq, UFFDIO_COPY as _)?],
+        and![Cond::new(1, ArgLen::Dword, Eq, UFFDIO_ZEROPAGE as _)?],
+        and![Cond::new(1, ArgLen::Dword, Eq, UFFDIO_WRITEPROTECT as _)?],
         and![Cond::new(1, ArgLen::Dword, Eq, FIOCLEX as _)?],
         and![Cond::new(1, ArgLen::Dword, Eq, FIONBIO as _)?],
         and![Cond::new(1, ArgLen::Dword, Eq, SIOCGIFFLAGS)?],
