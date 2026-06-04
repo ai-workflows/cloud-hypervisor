@@ -226,9 +226,14 @@ fn send_payload_with_fd(
     msg.msg_iov = &mut iov;
     msg.msg_iovlen = 1;
     msg.msg_control = cmsg_buf.as_mut_ptr() as *mut libc::c_void;
-    // SAFETY: computing control length for one fd.
-    msg.msg_controllen = unsafe { libc::CMSG_SPACE(std::mem::size_of::<libc::c_int>() as u32) }
-        as libc::size_t;
+    // SAFETY: computing control length for one fd. The cast is
+    // target-dependent: msg_controllen is size_t on glibc and socklen_t on
+    // musl.
+    #[allow(clippy::unnecessary_cast)]
+    {
+        msg.msg_controllen =
+            unsafe { libc::CMSG_SPACE(std::mem::size_of::<libc::c_int>() as u32) } as _;
+    }
     assert!(msg.msg_controllen as usize <= CMSG_CAPACITY);
 
     // SAFETY: msg_control points at a buffer large enough for one cmsghdr.
@@ -238,8 +243,11 @@ fn send_payload_with_fd(
     unsafe {
         (*cmsg).cmsg_level = libc::SOL_SOCKET;
         (*cmsg).cmsg_type = libc::SCM_RIGHTS;
-        (*cmsg).cmsg_len =
-            libc::CMSG_LEN(std::mem::size_of::<libc::c_int>() as u32) as libc::size_t;
+        // cmsg_len is size_t on glibc and socklen_t on musl.
+        #[allow(clippy::unnecessary_cast)]
+        {
+            (*cmsg).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<libc::c_int>() as u32) as _;
+        }
         std::ptr::copy_nonoverlapping(
             &fd as *const libc::c_int as *const u8,
             libc::CMSG_DATA(cmsg),
@@ -349,7 +357,11 @@ mod tests {
         msg.msg_iov = &mut iov;
         msg.msg_iovlen = 1;
         msg.msg_control = cmsg_buf.as_mut_ptr() as *mut libc::c_void;
-        msg.msg_controllen = std::mem::size_of_val(&cmsg_buf) as libc::size_t;
+        // msg_controllen is size_t on glibc and socklen_t on musl.
+        #[allow(clippy::unnecessary_cast)]
+        {
+            msg.msg_controllen = std::mem::size_of_val(&cmsg_buf) as _;
+        }
 
         // SAFETY: msg and buffers are valid for the call.
         let received = unsafe { libc::recvmsg(stream.as_raw_fd(), &mut msg, 0) };
