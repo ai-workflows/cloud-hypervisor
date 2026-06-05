@@ -1204,9 +1204,11 @@ impl MemoryManager {
                 let file_offset = region
                     .file_offset()
                     .ok_or(Error::UffdHandoffRegionNotFileBacked)?;
-                if region.flags() & libc::MAP_SHARED == 0 {
-                    return Err(Error::UffdHandoffRegionNotShared);
-                }
+                // Both MAP_SHARED and MAP_PRIVATE file-backed regions are
+                // accepted. MAP_PRIVATE is required for eviction (the owner can
+                // MADV_DONTNEED a private page so the next access re-faults
+                // MISSING); the sharing mode is reported to the servicer.
+                let shared = region.flags() & libc::MAP_SHARED != 0;
                 let metadata = file_offset
                     .file()
                     .metadata()
@@ -1218,6 +1220,7 @@ impl MemoryManager {
                     file_offset: file_offset.start(),
                     backing_dev: metadata.dev(),
                     backing_ino: metadata.ino(),
+                    shared,
                 });
             }
 

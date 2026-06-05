@@ -94,6 +94,10 @@ pub struct UffdHandoffRegionSource {
     pub file_offset: u64,
     pub backing_dev: u64,
     pub backing_ino: u64,
+    /// True when the region is mapped `MAP_SHARED`. A `MAP_PRIVATE` region is
+    /// evictable by the owner (`MADV_DONTNEED` re-faults MISSING); a shared
+    /// region is not (the page persists in the shared object).
+    pub shared: bool,
 }
 
 /// Serialized per-region record in the handoff metadata document.
@@ -105,6 +109,9 @@ pub struct UffdHandoffRegion {
     pub file_offset: u64,
     pub backing_dev: u64,
     pub backing_ino: u64,
+    /// True when the region is mapped `MAP_SHARED` (not evictable via
+    /// `MADV_DONTNEED`); false for `MAP_PRIVATE` (evictable).
+    pub shared: bool,
 }
 
 /// Handoff metadata document sent ahead of the descriptor.
@@ -306,6 +313,7 @@ pub fn perform_uffd_handoff(
                 file_offset: region.file_offset,
                 backing_dev: region.backing_dev,
                 backing_ino: region.backing_ino,
+                shared: region.shared,
             })
             .collect(),
     };
@@ -502,6 +510,8 @@ mod tests {
                 file_offset: 0,
                 backing_dev: metadata.dev(),
                 backing_ino: metadata.ino(),
+                // The test mapping above uses MAP_SHARED.
+                shared: true,
             }
         }
     }
