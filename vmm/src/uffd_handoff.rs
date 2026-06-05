@@ -81,6 +81,9 @@ pub enum UffdHandoffError {
     #[error("uffd handoff peer returned unexpected acknowledgement byte {0:#x}")]
     AckUnexpected(u8),
 
+    #[error("failed to spawn the uffd cooperation control thread")]
+    CooperationThreadSpawn(#[source] std::io::Error),
+
     #[error("failed to serialize uffd handoff metadata")]
     Serialize(#[source] serde_json::Error),
 }
@@ -341,9 +344,83 @@ pub fn perform_uffd_handoff(
         return Err(UffdHandoffError::AckUnexpected(ack[0]));
     }
 
+    // Keep the control socket open and service post-handoff cooperation
+    // commands (currently EVICT) for the lifetime of the VM. The peer (the
+    // external page-fault servicer) decides which pages to evict; only the
+    // mapping owner can drop them so the next guest access re-faults MISSING.
+    let region_maps: Vec<CooperationRegion> = regions
+        .iter()
+        .map(|region| CooperationRegion {
+            guest_phys_addr: region.guest_phys_addr,
+            host_virt_addr: region.host_virt_addr as u64,
+            len: region.len,
+        })
+        .collect();
+    std::thread::Builder::new()
+        .name("uffd-coop".to_string())
+        .spawn(move || cooperation_loop(stream, &region_maps))
+        .map_err(UffdHandoffError::CooperationThreadSpawn)?;
+
     // The peer now holds its own reference to the userfaultfd file object;
     // dropping our descriptor here does not tear down the registration.
     Ok(metadata)
+}
+
+/// One guest-memory region for translating evicted page-frame numbers to host
+/// virtual addresses.
+#[derive(Clone, Copy)]
+struct CooperationRegion {
+    guest_phys_addr: u64,
+    host_virt_addr: u64,
+    len: u64,
+}
+
+/// Cooperation control opcodes (servicer → VMM).
+const COOP_OP_EVICT: u8 = 1;
+const COOP_PAGE_SIZE: u64 = 4096;
+
+/// Reads and services cooperation commands until the peer closes the socket.
+/// Each command is `[u8 op][u32 count_le][u64 pfn_le]*count`.
+fn cooperation_loop(mut stream: UnixStream, regions: &[CooperationRegion]) {
+    loop {
+        let mut op = [0u8; 1];
+        if stream.read_exact(&mut op).is_err() {
+            return; // peer closed the control socket; VM teardown or done.
+        }
+        let mut count_buf = [0u8; 4];
+        if stream.read_exact(&mut count_buf).is_err() {
+            return;
+        }
+        let count = u32::from_le_bytes(count_buf) as usize;
+        let mut pfns = vec![0u8; count * 8];
+        if stream.read_exact(&mut pfns).is_err() {
+            return;
+        }
+        if op[0] != COOP_OP_EVICT {
+            continue; // unknown op: ignore forward-compatibly.
+        }
+        for chunk in pfns.chunks_exact(8) {
+            let pfn = u64::from_le_bytes(chunk.try_into().unwrap());
+            let gpa = pfn.saturating_mul(COOP_PAGE_SIZE);
+            // Find the region containing this guest-physical page and drop it.
+            for region in regions {
+                if gpa >= region.guest_phys_addr
+                    && gpa + COOP_PAGE_SIZE <= region.guest_phys_addr + region.len
+                {
+                    let host_va = region.host_virt_addr + (gpa - region.guest_phys_addr);
+                    // SAFETY: host_va/len lie inside the region's mapping.
+                    unsafe {
+                        libc::madvise(
+                            host_va as *mut libc::c_void,
+                            COOP_PAGE_SIZE as usize,
+                            libc::MADV_DONTNEED,
+                        );
+                    }
+                    break;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
