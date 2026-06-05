@@ -1201,25 +1201,32 @@ impl MemoryManager {
             let memory = guest_memory.memory();
             let mut sources = Vec::new();
             for region in memory.iter() {
-                let file_offset = region
-                    .file_offset()
-                    .ok_or(Error::UffdHandoffRegionNotFileBacked)?;
-                // Both MAP_SHARED and MAP_PRIVATE file-backed regions are
-                // accepted. MAP_PRIVATE is required for eviction (the owner can
+                // The handoff passes the userfaultfd descriptor (not the backing
+                // fd), and the servicer fills via UFFDIO_COPY, so a backing file
+                // is not functionally required — it is only used for optional
+                // backing-identity metadata. Anonymous regions are accepted and
+                // report no backing identity. MAP_PRIVATE (whether anonymous or
+                // file-backed) is required for eviction: the owner can
                 // MADV_DONTNEED a private page so the next access re-faults
-                // MISSING); the sharing mode is reported to the servicer.
+                // MISSING. The sharing mode is reported to the servicer.
                 let shared = region.flags() & libc::MAP_SHARED != 0;
-                let metadata = file_offset
-                    .file()
-                    .metadata()
-                    .map_err(Error::UffdHandoffBackingFileMetadata)?;
+                let (file_offset, backing_dev, backing_ino) = match region.file_offset() {
+                    Some(file_offset) => {
+                        let metadata = file_offset
+                            .file()
+                            .metadata()
+                            .map_err(Error::UffdHandoffBackingFileMetadata)?;
+                        (file_offset.start(), metadata.dev(), metadata.ino())
+                    }
+                    None => (0, 0, 0),
+                };
                 sources.push(crate::uffd_handoff::UffdHandoffRegionSource {
                     guest_phys_addr: region.start_addr().raw_value(),
                     len: region.len(),
                     host_virt_addr: region.as_ptr() as usize,
-                    file_offset: file_offset.start(),
-                    backing_dev: metadata.dev(),
-                    backing_ino: metadata.ino(),
+                    file_offset,
+                    backing_dev,
+                    backing_ino,
                     shared,
                 });
             }
