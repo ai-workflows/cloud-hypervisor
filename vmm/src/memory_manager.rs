@@ -176,6 +176,10 @@ pub struct MemoryManager {
     prefault: bool,
     thp: bool,
     user_provided_zones: bool,
+    // Meridian cooperation seam: guest memory is served on demand through the
+    // userfaultfd handoff, so it lives in the external page store rather than in
+    // a snapshot memory file.
+    uffd_handoff_active: bool,
     snapshot_memory_ranges: MemoryRangeTable,
     memory_zones: MemoryZones,
     log_dirty: bool, // Enable dirty logging for created RAM regions
@@ -1291,6 +1295,7 @@ impl MemoryManager {
             hugepage_size: config.hugepage_size,
             prefault: config.prefault,
             user_provided_zones,
+            uffd_handoff_active: config.uffd_handoff_socket.is_some(),
             snapshot_memory_ranges: MemoryRangeTable::default(),
             memory_zones,
             guest_ram_mappings: Vec::new(),
@@ -1333,9 +1338,18 @@ impl MemoryManager {
                 Default::default(),
             )?;
 
-            mm.lock()
-                .unwrap()
-                .fill_saved_regions(memory_file_path, &mem_snapshot.memory_ranges)?;
+            // Meridian cooperation seam: when guest memory is served on demand
+            // through the userfaultfd handoff, the saved image lives in the
+            // external page store, not in the snapshot file. Leave the restored
+            // guest RAM MISSING so it demand-faults from the page store rather
+            // than copying a full image back in here. The handoff itself has
+            // already run inside `MemoryManager::new` above (it is unconditional
+            // and fires on the restore path too).
+            if config.uffd_handoff_socket.is_none() {
+                mm.lock()
+                    .unwrap()
+                    .fill_saved_regions(memory_file_path, &mem_snapshot.memory_ranges)?;
+            }
 
             Ok(mm)
         } else {
@@ -2641,6 +2655,14 @@ impl Transportable for MemoryManager {
         _snapshot: &Snapshot,
         destination_url: &str,
     ) -> result::Result<(), MigratableError> {
+        // Meridian cooperation seam: when guest memory is served on demand
+        // through the userfaultfd handoff it lives in the external page store,
+        // so there is no full image to dump into a snapshot memory file. The
+        // matching restore path skips `fill_saved_regions` and demand-faults.
+        if self.uffd_handoff_active {
+            return Ok(());
+        }
+
         if self.snapshot_memory_ranges.is_empty() {
             return Ok(());
         }
