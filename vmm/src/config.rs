@@ -847,7 +847,8 @@ impl MemoryConfig {
             .add("hugepage_size")
             .add("prefault")
             .add("thp")
-            .add("uffd_handoff_socket");
+            .add("uffd_handoff_socket")
+            .add("uffd_minor");
         parser.parse(memory).map_err(Error::ParseMemory)?;
 
         let size = parser
@@ -897,6 +898,11 @@ impl MemoryConfig {
             .unwrap_or(Toggle(true))
             .0;
         let uffd_handoff_socket = parser.get("uffd_handoff_socket").map(PathBuf::from);
+        let uffd_minor = parser
+            .convert::<Toggle>("uffd_minor")
+            .map_err(Error::ParseMemory)?
+            .unwrap_or(Toggle(false))
+            .0;
 
         let zones: Option<Vec<MemoryZoneConfig>> = if let Some(memory_zones) = &memory_zones {
             let mut zones = Vec::new();
@@ -985,6 +991,7 @@ impl MemoryConfig {
             zones,
             thp,
             uffd_handoff_socket,
+            uffd_minor,
         })
     }
 
@@ -4370,6 +4377,7 @@ mod unit_tests {
                 zones: None,
                 thp: true,
                 uffd_handoff_socket: None,
+                uffd_minor: false,
             },
             payload: Some(PayloadConfig {
                 kernel: Some(PathBuf::from("/path/to/kernel")),

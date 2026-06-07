@@ -1231,8 +1231,9 @@ impl MemoryManager {
                 });
             }
 
-            let handoff = crate::uffd_handoff::perform_uffd_handoff(&sources, socket_path)
-                .map_err(Error::UffdHandoff)?;
+            let handoff =
+                crate::uffd_handoff::perform_uffd_handoff(&sources, socket_path, config.uffd_minor)
+                    .map_err(Error::UffdHandoff)?;
             info!(
                 "uffd handoff complete: socket={}, regions={}, user_mode_only={}, \
                  registered_write_protect={}",

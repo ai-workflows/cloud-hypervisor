@@ -51,6 +51,9 @@ pub enum UffdHandoffError {
     #[error("failed to create userfaultfd descriptor")]
     UffdCreate(#[source] userfaultfd::Error),
 
+    #[error("failed to create minor-fault-capable userfaultfd descriptor")]
+    UffdMinorCreate(#[source] std::io::Error),
+
     #[error(
         "failed to register guest RAM range (host_virt_addr {host_virt_addr:#x}, len {len}) \
          with userfaultfd"
@@ -140,7 +143,10 @@ struct CreatedUffd {
     user_mode_only: bool,
 }
 
-fn create_uffd() -> Result<CreatedUffd, UffdHandoffError> {
+fn create_uffd(minor: bool) -> Result<CreatedUffd, UffdHandoffError> {
+    if minor {
+        return create_uffd_minor();
+    }
     // Prefer a descriptor that can observe kernel-mode faults (required for
     // KVM guest accesses). Fall back to a user-mode-only descriptor so the
     // handoff can still be exercised without privileges, reporting that
@@ -175,10 +181,92 @@ fn create_uffd() -> Result<CreatedUffd, UffdHandoffError> {
     })
 }
 
+/// Creates a userfaultfd with `UFFD_FEATURE_MINOR_SHMEM` enabled, needed so guest
+/// RAM can be registered with `MINOR` mode and faults resolved via
+/// `UFFDIO_CONTINUE` (the lazy-warm-pool seam). The `userfaultfd` 0.9 crate's
+/// `UffdBuilder` cannot request that feature, so we run `UFFDIO_API` by hand and
+/// wrap the descriptor. Prefers a kernel-fault-capable descriptor, then falls
+/// back to user-mode-only.
+fn create_uffd_minor() -> Result<CreatedUffd, UffdHandoffError> {
+    use std::os::fd::FromRawFd;
+
+    const UFFD_API_VALUE: u64 = 0xAA;
+    const UFFD_FEATURE_MISSING_SHMEM: u64 = 1 << 3;
+    const UFFD_FEATURE_MINOR_SHMEM: u64 = 1 << 9;
+    // _IOWR(0xAA, 0x3F, struct uffdio_api { u64; 3 } = 24 bytes) on x86-64.
+    // (Cast to the libc-specific request type at the call site: `c_ulong` on
+    // glibc, `c_int` on musl.)
+    const UFFDIO_API_REQUEST: u32 = 0xC018_AA3F;
+    const UFFD_USER_MODE_ONLY: libc::c_int = 1;
+
+    #[repr(C)]
+    struct UffdioApi {
+        api: u64,
+        features: u64,
+        ioctls: u64,
+    }
+
+    let mut last_err = std::io::Error::from_raw_os_error(libc::ENOSYS);
+    for user_mode_only in [false, true] {
+        let mut flags = libc::O_CLOEXEC;
+        if user_mode_only {
+            flags |= UFFD_USER_MODE_ONLY;
+        }
+        // SAFETY: the userfaultfd syscall returns a new owned descriptor or -errno.
+        let fd = unsafe { libc::syscall(libc::SYS_userfaultfd, libc::c_long::from(flags)) };
+        if fd < 0 {
+            last_err = std::io::Error::last_os_error();
+            continue;
+        }
+        let fd = fd as i32;
+        let mut api = UffdioApi {
+            api: UFFD_API_VALUE,
+            features: UFFD_FEATURE_MISSING_SHMEM | UFFD_FEATURE_MINOR_SHMEM,
+            ioctls: 0,
+        };
+        // SAFETY: `fd` is our freshly created userfaultfd; `api` is a valid struct.
+        let rc = unsafe { libc::ioctl(fd, UFFDIO_API_REQUEST as _, std::ptr::from_mut(&mut api)) };
+        if rc < 0 {
+            last_err = std::io::Error::last_os_error();
+            // SAFETY: closing our own descriptor.
+            unsafe { libc::close(fd) };
+            continue;
+        }
+        // SAFETY: a freshly created userfaultfd we exclusively own; transfer it.
+        let uffd = unsafe { Uffd::from_raw_fd(fd) };
+        return Ok(CreatedUffd {
+            uffd,
+            user_mode_only,
+        });
+    }
+    Err(UffdHandoffError::UffdMinorCreate(last_err))
+}
+
 fn register_regions(
     uffd: &Uffd,
     regions: &[UffdHandoffRegionSource],
+    minor: bool,
 ) -> Result<bool, UffdHandoffError> {
+    if minor {
+        // Lazy-warm-pool: register MISSING|MINOR so an unfilled page still
+        // MISSING-faults (servicer fills the shared pool from the store) and any
+        // fault can be resolved with `UFFDIO_CONTINUE` (sharing one physical copy
+        // across guests). Copy-on-write on writes is handled by the kernel on the
+        // MAP_PRIVATE backing, so no write-protect registration is used here.
+        for region in regions {
+            uffd.register_with_mode(
+                region.host_virt_addr as *mut libc::c_void,
+                region.len as usize,
+                RegisterMode::MISSING | RegisterMode::MINOR,
+            )
+            .map_err(|source| UffdHandoffError::UffdRegister {
+                host_virt_addr: region.host_virt_addr,
+                len: region.len,
+                source,
+            })?;
+        }
+        return Ok(false);
+    }
     // Try missing + write-protect registration across all regions first so
     // the descriptor can also serve as a dirty-page write-protect producer.
     // If any region rejects write-protect mode, fall back to missing-only
@@ -293,13 +381,14 @@ fn send_payload_with_fd(
 pub fn perform_uffd_handoff(
     regions: &[UffdHandoffRegionSource],
     socket_path: &Path,
+    minor: bool,
 ) -> Result<UffdHandoffMetadata, UffdHandoffError> {
     if regions.is_empty() {
         return Err(UffdHandoffError::NoEligibleRegions);
     }
 
-    let created = create_uffd()?;
-    let registered_write_protect = register_regions(&created.uffd, regions)?;
+    let created = create_uffd(minor)?;
+    let registered_write_protect = register_regions(&created.uffd, regions, minor)?;
 
     let metadata = UffdHandoffMetadata {
         protocol: UFFD_HANDOFF_PROTOCOL,
@@ -525,7 +614,7 @@ mod tests {
 
     #[test]
     fn handoff_rejects_empty_region_list() {
-        let err = perform_uffd_handoff(&[], Path::new("/nonexistent-socket")).unwrap_err();
+        let err = perform_uffd_handoff(&[], Path::new("/nonexistent-socket"), false).unwrap_err();
         assert!(matches!(err, UffdHandoffError::NoEligibleRegions));
     }
 
@@ -541,6 +630,7 @@ mod tests {
         let err = perform_uffd_handoff(
             &[mapping.region_source()],
             Path::new("/nonexistent/uffd-handoff.sock"),
+            false,
         )
         .unwrap_err();
         assert!(matches!(err, UffdHandoffError::SocketConnect { .. }));
@@ -659,7 +749,7 @@ mod tests {
             }
         });
 
-        let metadata = perform_uffd_handoff(&[source], &socket_path).unwrap();
+        let metadata = perform_uffd_handoff(&[source], &socket_path, false).unwrap();
         assert_eq!(metadata.regions.len(), 1);
         assert_eq!(metadata.regions[0].host_virt_addr as usize, mapping_addr);
 

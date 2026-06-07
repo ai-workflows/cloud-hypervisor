@@ -214,6 +214,14 @@ pub struct MemoryConfig {
     /// this Unix socket before the VM boots.
     #[serde(default)]
     pub uffd_handoff_socket: Option<PathBuf>,
+    /// Meridian lazy-warm-pool seam: when true (with `uffd_handoff_socket`),
+    /// register guest RAM with `MISSING | MINOR` and enable
+    /// `UFFD_FEATURE_MINOR_SHMEM`, so the servicer can lazily fill a shared pool
+    /// from the page store and resolve faults with `UFFDIO_CONTINUE` (sharing
+    /// clean pages across guests; writes copy-on-write per guest). Off by default
+    /// — the existing missing/write-protect handoff is unchanged.
+    #[serde(default)]
+    pub uffd_minor: bool,
 }
 
 pub const DEFAULT_MEMORY_MB: u64 = 512;
@@ -233,6 +241,7 @@ impl Default for MemoryConfig {
             zones: None,
             thp: true,
             uffd_handoff_socket: None,
+            uffd_minor: false,
         }
     }
 }
