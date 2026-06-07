@@ -898,7 +898,11 @@ impl MemoryManager {
             let zones = vec![MemoryZoneConfig {
                 id: String::from(DEFAULT_MEMORY_ZONE),
                 size: config.size,
-                file: None,
+                // Meridian: honor the top-level `--memory ...,file=<path>` for the
+                // implicit default zone (upstream only read `file=` from explicit
+                // `--memory-zone`s, silently dropping it here → anonymous guest RAM,
+                // which `uffd_minor` MINOR registration rejects).
+                file: config.file.clone(),
                 shared: config.shared,
                 hugepages: config.hugepages,
                 hugepage_size: config.hugepage_size,

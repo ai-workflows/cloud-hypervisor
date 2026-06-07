@@ -222,6 +222,14 @@ pub struct MemoryConfig {
     /// — the existing missing/write-protect handoff is unchanged.
     #[serde(default)]
     pub uffd_minor: bool,
+    /// Meridian: backing file for the implicit default memory zone (the
+    /// top-level `--memory ...,file=<path>`). Upstream only honors `file=` on
+    /// explicit `--memory-zone`s; carrying it here lets the simple `--memory`
+    /// line back guest RAM with a (shmem) file so it is `vma_is_shmem` —
+    /// required for `uffd_minor` MINOR registration and for sharing the pool's
+    /// page cache with the lazy-fill servicer.
+    #[serde(default)]
+    pub file: Option<PathBuf>,
 }
 
 pub const DEFAULT_MEMORY_MB: u64 = 512;
@@ -242,6 +250,7 @@ impl Default for MemoryConfig {
             thp: true,
             uffd_handoff_socket: None,
             uffd_minor: false,
+            file: None,
         }
     }
 }

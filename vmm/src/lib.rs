@@ -2424,6 +2424,7 @@ mod unit_tests {
                 thp: true,
                 uffd_handoff_socket: None,
                 uffd_minor: false,
+                file: None,
             },
             payload: Some(PayloadConfig {
                 kernel: Some(PathBuf::from("/path/to/kernel")),
