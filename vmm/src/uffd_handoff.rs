@@ -260,7 +260,7 @@ fn register_regions(
             uffd.register_with_mode(
                 region.host_virt_addr as *mut libc::c_void,
                 region.len as usize,
-                RegisterMode::MISSING | RegisterMode::MINOR,
+                RegisterMode::MISSING | RegisterMode::from_bits_retain(UFFDIO_REGISTER_MODE_MINOR),
             )
             .map_err(|source| UffdHandoffError::UffdRegister {
                 host_virt_addr: region.host_virt_addr,
@@ -279,7 +279,8 @@ fn register_regions(
         match uffd.register_with_mode(
             region.host_virt_addr as *mut libc::c_void,
             region.len as usize,
-            RegisterMode::MISSING | RegisterMode::WRITE_PROTECT,
+            RegisterMode::MISSING
+                | RegisterMode::from_bits_retain(UFFDIO_REGISTER_MODE_WRITE_PROTECT),
         ) {
             Ok(_) => {}
             Err(_) => {
@@ -480,6 +481,13 @@ pub const COOP_EVICT_RESULT_BYTES: usize = 12;
 const COOP_PFN_BYTES: usize = std::mem::size_of::<u64>();
 pub const COOP_MAX_EVICT_PFNS: u32 = 65_536;
 const COOP_PAGE_SIZE: u64 = 4096;
+
+// These userfaultfd registration-mode bits are architecture-independent UAPI.
+// Keep them local because the userfaultfd crate's optional Linux-version
+// features make compilation depend on private macros in the target's headers,
+// while this handoff already negotiates the corresponding kernel features.
+const UFFDIO_REGISTER_MODE_WRITE_PROTECT: u64 = 1 << 1;
+const UFFDIO_REGISTER_MODE_MINOR: u64 = 1 << 2;
 
 type MadvisePage = fn(u64) -> Result<(), i32>;
 
