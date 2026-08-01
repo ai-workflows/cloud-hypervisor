@@ -9,6 +9,10 @@ concurrency:
   cancel-in-progress: true
 env:
   GITHUB_TOKEN: ${{ github.token }}
+  BINDGEN_EXTRA_CLANG_ARGS_x86_64_unknown_linux_musl: >-
+    -isystem /usr/x86_64-linux-gnu/include
+  CFLAGS_x86_64_unknown_linux_musl: >-
+    -isystem /usr/x86_64-linux-gnu/include
 
 jobs:
   release:
@@ -34,9 +38,9 @@ jobs:
     steps:
       - name: Code checkout
         uses: actions/checkout@v6
-      - name: Install musl-gcc
+      - name: Install musl-gcc and Linux UAPI headers
         if: contains(matrix.platform.target, 'musl')
-        run: sudo apt install -y musl-tools
+        run: sudo apt install -y musl-tools linux-libc-dev-amd64-cross
       - name: Create release directory
         if: |
           github.event_name == 'push' && github.ref_type == 'tag' &&

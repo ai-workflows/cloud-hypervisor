@@ -5,11 +5,11 @@
 #![no_main]
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, Receiver};
 use std::sync::LazyLock;
+use std::sync::mpsc::{Receiver, channel};
 use std::thread;
 
-use libfuzzer_sys::{fuzz_target, Corpus};
+use libfuzzer_sys::{Corpus, fuzz_target};
 use micro_http::Request;
 use vm_migration::MigratableError;
 use vmm::api::http::*;
@@ -151,6 +151,8 @@ impl RequestHandler for StubApiRequestHandler {
                     zones: None,
                     thp: true,
                     uffd_handoff_socket: None,
+                    uffd_minor: false,
+                    file: None,
                 },
                 payload: Some(PayloadConfig {
                     kernel: Some(PathBuf::from("/path/to/kernel")),
