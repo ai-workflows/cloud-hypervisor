@@ -334,6 +334,7 @@ fn send_payload_with_fd(
     // musl.
     #[allow(clippy::unnecessary_cast)]
     {
+        // SAFETY: computing the ancillary buffer size for exactly one fd.
         msg.msg_controllen =
             unsafe { libc::CMSG_SPACE(std::mem::size_of::<libc::c_int>() as u32) } as _;
     }
@@ -476,6 +477,7 @@ pub const COOP_FRAME_VERSION: u8 = 0x02;
 pub const COOP_EVICT_REQUEST_HEADER_BYTES: usize = 16;
 pub const COOP_EVICT_RESPONSE_HEADER_BYTES: usize = 20;
 pub const COOP_EVICT_RESULT_BYTES: usize = 12;
+const COOP_PFN_BYTES: usize = std::mem::size_of::<u64>();
 pub const COOP_MAX_EVICT_PFNS: u32 = 65_536;
 const COOP_PAGE_SIZE: u64 = 4096;
 
@@ -601,13 +603,13 @@ fn cooperation_loop_with_madvise(
         }
 
         let count = count as usize;
-        let mut pfn_bytes = vec![0_u8; count * std::mem::size_of::<u64>()];
+        let mut pfn_bytes = vec![0_u8; count * COOP_PFN_BYTES];
         if stream.read_exact(&mut pfn_bytes).is_err() {
             return;
         }
         let mut results = Vec::with_capacity(count);
-        for chunk in pfn_bytes.chunks_exact(std::mem::size_of::<u64>()) {
-            let pfn = u64::from_le_bytes(chunk.try_into().unwrap());
+        for chunk in pfn_bytes.as_chunks::<COOP_PFN_BYTES>().0 {
+            let pfn = u64::from_le_bytes(*chunk);
             results.push((pfn, evict_one_pfn(regions, pfn, madvise_page)));
         }
         if write_evict_response(&mut stream, sequence, 0, &results).is_err() {
@@ -772,7 +774,7 @@ mod tests {
         let count = u32::try_from(pfns.len()).unwrap();
         let mut request =
             evict_request_header(COOP_OP_EVICT, COOP_FRAME_VERSION, 0, sequence, count);
-        request.reserve(pfns.len() * std::mem::size_of::<u64>());
+        request.reserve(std::mem::size_of_val(pfns));
         for pfn in pfns {
             request.extend_from_slice(&pfn.to_le_bytes());
         }
@@ -791,7 +793,9 @@ mod tests {
         let mut result_bytes = vec![0_u8; count * COOP_EVICT_RESULT_BYTES];
         stream.read_exact(&mut result_bytes).unwrap();
         let results = result_bytes
-            .chunks_exact(COOP_EVICT_RESULT_BYTES)
+            .as_chunks::<COOP_EVICT_RESULT_BYTES>()
+            .0
+            .iter()
             .map(|chunk| {
                 (
                     u64::from_le_bytes(chunk[..8].try_into().unwrap()),
@@ -862,7 +866,7 @@ mod tests {
         let regions = vec![mapping.region()];
         let (server, mut client) = UnixStream::pair().unwrap();
         let worker = std::thread::spawn(move || {
-            cooperation_loop_with_madvise(server, &regions, system_madvise_page)
+            cooperation_loop_with_madvise(server, &regions, system_madvise_page);
         });
 
         client.write_all(&evict_request(1, &[0, 1])).unwrap();
@@ -887,7 +891,7 @@ mod tests {
         let regions = vec![mapping.region()];
         let (server, mut client) = UnixStream::pair().unwrap();
         let worker = std::thread::spawn(move || {
-            cooperation_loop_with_madvise(server, &regions, system_madvise_page)
+            cooperation_loop_with_madvise(server, &regions, system_madvise_page);
         });
 
         client.write_all(&evict_request(1, &[])).unwrap();
@@ -922,7 +926,7 @@ mod tests {
         let regions = vec![mapping.region()];
         let (server, mut client) = UnixStream::pair().unwrap();
         let worker = std::thread::spawn(move || {
-            cooperation_loop_with_madvise(server, &regions, system_madvise_page)
+            cooperation_loop_with_madvise(server, &regions, system_madvise_page);
         });
 
         client.write_all(&evict_request(1, &[0, 99])).unwrap();
@@ -971,7 +975,7 @@ mod tests {
         region.shared = true;
         let (server, mut client) = UnixStream::pair().unwrap();
         let worker = std::thread::spawn(move || {
-            cooperation_loop_with_madvise(server, &[region], system_madvise_page)
+            cooperation_loop_with_madvise(server, &[region], system_madvise_page);
         });
 
         client.write_all(&evict_request(1, &[0])).unwrap();
@@ -998,7 +1002,7 @@ mod tests {
         };
         let (server, mut client) = UnixStream::pair().unwrap();
         let worker = std::thread::spawn(move || {
-            cooperation_loop_with_madvise(server, &[overflow_region], system_madvise_page)
+            cooperation_loop_with_madvise(server, &[overflow_region], system_madvise_page);
         });
 
         client.write_all(&evict_request(1, &[u64::MAX, 1])).unwrap();
@@ -1063,7 +1067,7 @@ mod tests {
         let regions = vec![mapping.region()];
         let (server, mut client) = UnixStream::pair().unwrap();
         let worker = std::thread::spawn(move || {
-            cooperation_loop_with_madvise(server, &regions, system_madvise_page)
+            cooperation_loop_with_madvise(server, &regions, system_madvise_page);
         });
 
         client.write_all(&evict_request(2, &[0])).unwrap();
@@ -1097,7 +1101,7 @@ mod tests {
         let regions = vec![mapping.region()];
         let (server, mut client) = UnixStream::pair().unwrap();
         let worker = std::thread::spawn(move || {
-            cooperation_loop_with_madvise(server, &regions, system_madvise_page)
+            cooperation_loop_with_madvise(server, &regions, system_madvise_page);
         });
 
         for byte in evict_request(1, &[0]) {
