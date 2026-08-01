@@ -623,8 +623,10 @@ fn cooperation_loop_with_madvise(
 #[cfg(test)]
 mod tests {
     use std::io::{Read, Write};
+    use std::net::Shutdown;
     use std::os::unix::io::{FromRawFd, RawFd};
     use std::os::unix::net::{UnixListener, UnixStream};
+    use std::time::Duration;
 
     use super::*;
 
@@ -750,16 +752,27 @@ mod tests {
         results: Vec<(u64, i32)>,
     }
 
-    fn evict_request(sequence: u64, pfns: &[u64]) -> Vec<u8> {
-        let count = u32::try_from(pfns.len()).unwrap();
-        let mut request = Vec::with_capacity(
-            COOP_EVICT_REQUEST_HEADER_BYTES + pfns.len() * std::mem::size_of::<u64>(),
-        );
-        request.push(COOP_OP_EVICT);
-        request.push(COOP_FRAME_VERSION);
-        request.extend_from_slice(&0_u16.to_le_bytes());
+    fn evict_request_header(
+        op: u8,
+        version: u8,
+        reserved: u16,
+        sequence: u64,
+        count: u32,
+    ) -> Vec<u8> {
+        let mut request = Vec::with_capacity(COOP_EVICT_REQUEST_HEADER_BYTES);
+        request.push(op);
+        request.push(version);
+        request.extend_from_slice(&reserved.to_le_bytes());
         request.extend_from_slice(&sequence.to_le_bytes());
         request.extend_from_slice(&count.to_le_bytes());
+        request
+    }
+
+    fn evict_request(sequence: u64, pfns: &[u64]) -> Vec<u8> {
+        let count = u32::try_from(pfns.len()).unwrap();
+        let mut request =
+            evict_request_header(COOP_OP_EVICT, COOP_FRAME_VERSION, 0, sequence, count);
+        request.reserve(pfns.len() * std::mem::size_of::<u64>());
         for pfn in pfns {
             request.extend_from_slice(&pfn.to_le_bytes());
         }
@@ -793,6 +806,51 @@ mod tests {
         }
     }
 
+    fn assert_peer_closed(stream: &mut UnixStream) {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut byte = [0_u8; 1];
+        match stream.read(&mut byte) {
+            Ok(0) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+            result => panic!("expected peer closure, got {result:?}"),
+        }
+    }
+
+    fn assert_invalid_header(request: &[u8], sequence: u64, frame_errno: i32) {
+        let (server, mut client) = UnixStream::pair().unwrap();
+        let worker = std::thread::spawn(move || cooperation_loop(server, &[]));
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+
+        client.write_all(request).unwrap();
+        assert_eq!(
+            read_evict_response(&mut client),
+            EvictResponse {
+                sequence,
+                frame_errno,
+                results: vec![],
+            }
+        );
+        assert_peer_closed(&mut client);
+        worker.join().unwrap();
+    }
+
+    fn assert_truncated_request_closes_without_response(request: &[u8]) {
+        let (server, mut client) = UnixStream::pair().unwrap();
+        let worker = std::thread::spawn(move || cooperation_loop(server, &[]));
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+
+        client.write_all(request).unwrap();
+        client.shutdown(Shutdown::Write).unwrap();
+        assert_peer_closed(&mut client);
+        worker.join().unwrap();
+    }
+
     fn injected_madvise_failure(_host_va: u64) -> Result<(), i32> {
         Err(libc::EBUSY)
     }
@@ -818,6 +876,41 @@ mod tests {
         );
         assert_eq!(mapping.byte_at(0), 0);
         assert_eq!(mapping.byte_at(COOP_PAGE_SIZE as usize), 0);
+        drop(client);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn cooperation_v2_zero_count_ack_is_a_sequenced_barrier() {
+        let mapping = AnonymousPrivateMapping::new(1);
+        mapping.fill(0xD4);
+        let regions = vec![mapping.region()];
+        let (server, mut client) = UnixStream::pair().unwrap();
+        let worker = std::thread::spawn(move || {
+            cooperation_loop_with_madvise(server, &regions, system_madvise_page)
+        });
+
+        client.write_all(&evict_request(1, &[])).unwrap();
+        assert_eq!(
+            read_evict_response(&mut client),
+            EvictResponse {
+                sequence: 1,
+                frame_errno: 0,
+                results: vec![],
+            }
+        );
+        assert_eq!(mapping.byte_at(0), 0xD4);
+
+        client.write_all(&evict_request(2, &[0])).unwrap();
+        assert_eq!(
+            read_evict_response(&mut client),
+            EvictResponse {
+                sequence: 2,
+                frame_errno: 0,
+                results: vec![(0, 0)],
+            }
+        );
+        assert_eq!(mapping.byte_at(0), 0);
         drop(client);
         worker.join().unwrap();
     }
@@ -871,6 +964,99 @@ mod tests {
     }
 
     #[test]
+    fn cooperation_v2_reports_shared_region_as_unsupported() {
+        let mapping = AnonymousPrivateMapping::new(1);
+        mapping.fill(0xB6);
+        let mut region = mapping.region();
+        region.shared = true;
+        let (server, mut client) = UnixStream::pair().unwrap();
+        let worker = std::thread::spawn(move || {
+            cooperation_loop_with_madvise(server, &[region], system_madvise_page)
+        });
+
+        client.write_all(&evict_request(1, &[0])).unwrap();
+        assert_eq!(
+            read_evict_response(&mut client),
+            EvictResponse {
+                sequence: 1,
+                frame_errno: 0,
+                results: vec![(0, libc::EOPNOTSUPP)],
+            }
+        );
+        assert_eq!(mapping.byte_at(0), 0xB6);
+        drop(client);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn cooperation_v2_reports_pfn_and_region_overflow_as_range_errors() {
+        let overflow_region = CooperationRegion {
+            guest_phys_addr: COOP_PAGE_SIZE,
+            host_virt_addr: 0,
+            len: u64::MAX,
+            shared: false,
+        };
+        let (server, mut client) = UnixStream::pair().unwrap();
+        let worker = std::thread::spawn(move || {
+            cooperation_loop_with_madvise(server, &[overflow_region], system_madvise_page)
+        });
+
+        client.write_all(&evict_request(1, &[u64::MAX, 1])).unwrap();
+        assert_eq!(
+            read_evict_response(&mut client),
+            EvictResponse {
+                sequence: 1,
+                frame_errno: 0,
+                results: vec![(u64::MAX, libc::ERANGE), (1, libc::ERANGE)],
+            }
+        );
+        drop(client);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn cooperation_v2_rejects_invalid_opcode_and_closes() {
+        assert_invalid_header(
+            &evict_request_header(0x7f, COOP_FRAME_VERSION, 0, 1, 0),
+            1,
+            libc::EOPNOTSUPP,
+        );
+    }
+
+    #[test]
+    fn cooperation_v2_rejects_invalid_frame_version_and_closes() {
+        assert_invalid_header(
+            &evict_request_header(COOP_OP_EVICT, 1, 0, 1, 0),
+            1,
+            libc::EPROTONOSUPPORT,
+        );
+    }
+
+    #[test]
+    fn cooperation_v2_rejects_nonzero_reserved_and_closes() {
+        assert_invalid_header(
+            &evict_request_header(COOP_OP_EVICT, COOP_FRAME_VERSION, 1, 1, 0),
+            1,
+            libc::EPROTO,
+        );
+    }
+
+    #[test]
+    fn cooperation_v2_rejects_oversized_count_without_reading_body() {
+        assert_invalid_header(
+            &evict_request_header(
+                COOP_OP_EVICT,
+                COOP_FRAME_VERSION,
+                0,
+                1,
+                COOP_MAX_EVICT_PFNS + 1,
+            ),
+            1,
+            libc::E2BIG,
+        );
+    }
+
+    #[test]
     fn cooperation_v2_rejects_non_monotonic_sequence() {
         let mapping = AnonymousPrivateMapping::new(1);
         mapping.fill(0x7D);
@@ -890,8 +1076,18 @@ mod tests {
             }
         );
         assert_eq!(mapping.byte_at(0), 0x7D);
-        drop(client);
+        assert_peer_closed(&mut client);
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn cooperation_v2_truncated_header_and_body_close_without_response() {
+        let header = evict_request_header(COOP_OP_EVICT, COOP_FRAME_VERSION, 0, 1, 2);
+        assert_truncated_request_closes_without_response(&header[..8]);
+
+        let mut truncated_body = header;
+        truncated_body.extend_from_slice(&0_u64.to_le_bytes());
+        assert_truncated_request_closes_without_response(&truncated_body);
     }
 
     #[test]
