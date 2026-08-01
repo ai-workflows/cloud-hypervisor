@@ -3,6 +3,11 @@ on: [pull_request, merge_group]
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
+env:
+  BINDGEN_EXTRA_CLANG_ARGS_x86_64_unknown_linux_musl: >-
+    -isystem /usr/x86_64-linux-gnu/include
+  CFLAGS_x86_64_unknown_linux_musl: >-
+    -isystem /usr/x86_64-linux-gnu/include
 
 jobs:
   build:
@@ -25,8 +30,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install musl-gcc
-        run: sudo apt install -y musl-tools
+      - name: Install musl-gcc and Linux UAPI headers
+        if: contains(matrix.target, 'musl')
+        run: sudo apt install -y musl-tools linux-libc-dev-amd64-cross
 
       - name: Install Rust toolchain (${{ matrix.rust }})
         uses: dtolnay/rust-toolchain@stable

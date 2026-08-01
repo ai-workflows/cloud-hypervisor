@@ -3,6 +3,11 @@ on: [pull_request, merge_group]
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
+env:
+  BINDGEN_EXTRA_CLANG_ARGS_x86_64_unknown_linux_musl: >-
+    -isystem /usr/x86_64-linux-gnu/include
+  CFLAGS_x86_64_unknown_linux_musl: >-
+    -isystem /usr/x86_64-linux-gnu/include
 
 jobs:
   build:
@@ -32,6 +37,10 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Install x86_64 musl Linux UAPI headers
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt install -y linux-libc-dev-amd64-cross
 
       - name: Install Rust toolchain (${{ matrix.rust }})
         uses: actions-rs/toolchain@v1
@@ -112,11 +121,13 @@ jobs:
           target: ${{ matrix.target }}
           args: --locked --all --all-targets --tests --examples --features "tracing" -- -D warnings
       - name: Clippy (default features + fw_cfg)
-        uses: actions-rs/cargo@v1
+        uses: houseabsolute/actions-rust-cross@v1
         with:
-          use-cross: ${{ matrix.target != 'x86_64-unknown-linux-gnu' }}
           command: clippy
-          args: --target=${{ matrix.target }} --locked --all --all-targets --tests --examples --features "fw_cfg" -- -D warnings
+          cross-version: 3e0957637b49b1bbced23ad909170650c5b70635
+          toolchain: ${{ matrix.rust }}
+          target: ${{ matrix.target }}
+          args: --locked --all --all-targets --tests --examples --features "fw_cfg" -- -D warnings
 
       - name: Clippy (default features + ivshmem)
         uses: houseabsolute/actions-rust-cross@v1
