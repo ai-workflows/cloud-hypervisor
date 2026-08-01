@@ -159,7 +159,7 @@ fn remote_command(api_socket: &str, command: &str, arg: Option<&str>) -> bool {
     } else {
         eprintln!(
             "Error running ch-remote command: {:?}\nstderr: {}",
-            &cmd,
+            cmd,
             String::from_utf8_lossy(&output.stderr)
         );
         false
