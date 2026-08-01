@@ -1,4 +1,0 @@
-[target.aarch64-unknown-linux-musl.env]
-passthrough = [
-    "BINDGEN_EXTRA_CLANG_ARGS_aarch64_unknown_linux_musl=--sysroot=/usr/local/aarch64-linux-musl -D_UFFDIO_WRITEPROTECT=0x06 -D_UFFDIO_CONTINUE=0x07",
-]
