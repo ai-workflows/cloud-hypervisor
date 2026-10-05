@@ -2758,6 +2758,23 @@ impl Vm {
         Ok(())
     }
 
+    /// Gives a VM restored from a snapshot a fresh VM generation ID and notifies the guest, when
+    /// the VM has the device (`--vmgenid`). Called before `restore()` starts the vCPUs, so the
+    /// guest handles the notification (and reseeds its CRNG) as soon as it runs. A migration
+    /// keeps the same generation and doesn't call this.
+    pub fn new_vm_generation(&mut self) -> Result<()> {
+        if self
+            .device_manager
+            .lock()
+            .unwrap()
+            .new_vm_generation()
+            .map_err(Error::DeviceManager)?
+        {
+            event!("vm", "generation-changed");
+        }
+        Ok(())
+    }
+
     pub fn restore(&mut self) -> Result<()> {
         event!("vm", "restoring");
 

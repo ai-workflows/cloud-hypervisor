@@ -409,6 +409,7 @@ pub struct VmParams<'a> {
     #[cfg(feature = "pvmemcontrol")]
     pub pvmemcontrol: bool,
     pub pvpanic: bool,
+    pub vmgenid: bool,
     pub numa: Option<Vec<&'a str>>,
     pub watchdog: bool,
     #[cfg(feature = "guest_debug")]
@@ -474,6 +475,7 @@ impl<'a> VmParams<'a> {
         #[cfg(feature = "pvmemcontrol")]
         let pvmemcontrol = args.get_flag("pvmemcontrol");
         let pvpanic = args.get_flag("pvpanic");
+        let vmgenid = args.get_flag("vmgenid");
         let numa: Option<Vec<&str>> = args
             .get_many::<String>("numa")
             .map(|x| x.map(|y| y as &str).collect());
@@ -524,6 +526,7 @@ impl<'a> VmParams<'a> {
             #[cfg(feature = "pvmemcontrol")]
             pvmemcontrol,
             pvpanic,
+            vmgenid,
             numa,
             watchdog,
             #[cfg(feature = "guest_debug")]
@@ -3167,6 +3170,7 @@ impl VmConfig {
             #[cfg(feature = "pvmemcontrol")]
             pvmemcontrol,
             pvpanic: vm_params.pvpanic,
+            vmgenid: vm_params.vmgenid,
             iommu: false, // updated in VmConfig::validate()
             numa,
             watchdog: vm_params.watchdog,
@@ -4210,6 +4214,7 @@ mod unit_tests {
             #[cfg(feature = "pvmemcontrol")]
             pvmemcontrol: None,
             pvpanic: false,
+            vmgenid: false,
             iommu: false,
             numa: None,
             watchdog: false,
@@ -4426,6 +4431,7 @@ mod unit_tests {
             #[cfg(feature = "pvmemcontrol")]
             pvmemcontrol: None,
             pvpanic: false,
+            vmgenid: false,
             iommu: false,
             numa: None,
             watchdog: false,

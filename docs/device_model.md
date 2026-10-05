@@ -86,6 +86,24 @@ enabled.
 This device is always built-in, and it is enabled by default since the ACPI
 feature is enabled by default.
 
+### VM generation ID
+
+A 128-bit VM generation ID in one page of guest memory, described by an ACPI
+device (`_HID "VMGENCTR"`, `_CID "VM_Gen_Counter"`, `ADDR`) that Linux's
+`vmgenid` driver binds to. Each time the VM is restored from a snapshot,
+Cloud Hypervisor writes a fresh random ID before any vCPU runs and raises an
+ACPI notification through the GED device. The guest kernel then reseeds its
+CRNG (`add_vmfork_randomness()`) and emits a `NEW_VMGENID` uevent, so VMs
+restored from the same snapshot stop sharing random state. A live migration
+keeps the ID.
+
+The page is not guest RAM: it lives in the platform MMIO area, so writing a
+new ID never touches the snapshot's memory. Its address and the current ID
+are part of the device state.
+
+This device is off by default. Enable it with `--vmgenid` when the VM is
+created; a restored VM takes the setting from its snapshot.
+
 ## Virtio devices
 
 For all virtio devices listed below, only `virtio-pci` transport layer is

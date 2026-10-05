@@ -398,6 +398,15 @@ fn get_cli_options_sorted(
             .num_args(0)
             .action(ArgAction::SetTrue)
             .group("vm-config"),
+        Arg::new("vmgenid")
+            .long("vmgenid")
+            .help(
+                "Enable the VM generation ID device: a restored VM gets a fresh ID and an ACPI \
+                 notification before its vCPUs run",
+            )
+            .num_args(0)
+            .action(ArgAction::SetTrue)
+            .group("vm-config"),
         Arg::new("rate-limit-group")
             .long("rate-limit-group")
             .help(RateLimiterGroupConfig::SYNTAX)
@@ -1022,6 +1031,7 @@ mod unit_tests {
             vdpa: None,
             vsock: None,
             pvpanic: false,
+            vmgenid: false,
             #[cfg(feature = "pvmemcontrol")]
             pvmemcontrol: None,
             iommu: false,

@@ -968,6 +968,8 @@ pub struct VmConfig {
     #[serde(default)]
     pub pvpanic: bool,
     #[serde(default)]
+    pub vmgenid: bool,
+    #[serde(default)]
     pub iommu: bool,
     pub numa: Option<Vec<NumaConfig>>,
     #[serde(default)]

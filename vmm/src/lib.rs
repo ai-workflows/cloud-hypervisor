@@ -1491,8 +1491,11 @@ impl Vmm {
             apply_landlock(&mut config).map_err(VmError::ApplyLandlock)?;
         }
 
-        // Now we can restore the rest of the VM.
+        // Now we can restore the rest of the VM. A VM restored from a snapshot is a new VM
+        // generation (several VMs may be restored from one snapshot): give it a fresh generation
+        // ID before its vCPUs run.
         if let Some(ref mut vm) = self.vm {
+            vm.new_vm_generation()?;
             vm.restore()
         } else {
             Err(VmError::VmNotCreated)
@@ -2468,6 +2471,7 @@ mod unit_tests {
             #[cfg(feature = "pvmemcontrol")]
             pvmemcontrol: None,
             pvpanic: false,
+            vmgenid: false,
             iommu: false,
             numa: None,
             watchdog: false,

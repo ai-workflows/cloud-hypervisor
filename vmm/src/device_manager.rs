@@ -150,6 +150,7 @@ const PVMEMCONTROL_DEVICE_NAME: &str = "__pvmemcontrol";
 const BALLOON_DEVICE_NAME: &str = "__balloon";
 const CONSOLE_DEVICE_NAME: &str = "__console";
 const PVPANIC_DEVICE_NAME: &str = "__pvpanic";
+const VMGENID_DEVICE_NAME: &str = "__vmgenid";
 #[cfg(feature = "ivshmem")]
 const IVSHMEM_DEVICE_NAME: &str = "__ivshmem";
 
@@ -644,6 +645,14 @@ pub enum DeviceManagerError {
     #[error("Cannot create a PvPanic device")]
     PvPanicCreate(#[source] devices::pvpanic::PvPanicError),
 
+    /// Cannot create the VM generation ID device
+    #[error("Cannot create the VM generation ID device")]
+    VmGenIdCreate(#[source] io::Error),
+
+    /// Cannot change the VM generation ID
+    #[error("Cannot change the VM generation ID")]
+    VmGenIdNewGeneration(#[source] io::Error),
+
     #[cfg(feature = "ivshmem")]
     /// Cannot create a ivshmem device
     #[error("Cannot create a ivshmem device: {0}")]
@@ -1094,6 +1103,9 @@ pub struct DeviceManager {
     // pvpanic device
     pvpanic_device: Option<Arc<Mutex<devices::PvPanicDevice>>>,
 
+    // VM generation ID device
+    vmgenid_device: Option<Arc<Mutex<devices::VmGenId>>>,
+
     // Flag to force setting the iommu on virtio devices
     force_iommu: bool,
 
@@ -1380,6 +1392,7 @@ impl DeviceManager {
             #[cfg(feature = "pvmemcontrol")]
             pvmemcontrol_devices: None,
             pvpanic_device: None,
+            vmgenid_device: None,
             force_iommu,
             io_uring_supported: None,
             aio_supported: None,
@@ -1477,6 +1490,13 @@ impl DeviceManager {
                     .try_clone()
                     .map_err(DeviceManagerError::EventFd)?,
             )?;
+        }
+
+        if self.config.lock().unwrap().vmgenid {
+            self.vmgenid_device = Some(self.add_vmgenid_device()?);
+            if let Some(ged) = self.ged_notification_device.as_ref() {
+                ged.lock().unwrap().enable_vm_generation_notify();
+            }
         }
 
         self.original_termios_opt = original_termios_opt;
@@ -4291,6 +4311,73 @@ impl DeviceManager {
         Ok(Some(pvpanic_device))
     }
 
+    /// Creates the VM generation ID device: one page in the platform MMIO area, mapped into the
+    /// guest, plus its AML (emitted with the DSDT). On a restore the page goes back to the address
+    /// recorded in the snapshot, which the guest kernel has already mapped.
+    fn add_vmgenid_device(&mut self) -> DeviceManagerResult<Arc<Mutex<devices::VmGenId>>> {
+        let id = String::from(VMGENID_DEVICE_NAME);
+        info!("Creating VM generation ID device {id}");
+
+        let state: Option<devices::vmgenid::VmGenIdState> =
+            state_from_id(self.snapshot.as_ref(), id.as_str())
+                .map_err(DeviceManagerError::RestoreGetState)?;
+        let address = self
+            .address_manager
+            .allocator
+            .lock()
+            .unwrap()
+            .allocate_platform_mmio_addresses(
+                state.as_ref().map(|state| GuestAddress(state.address)),
+                devices::vmgenid::VMGENID_REGION_SIZE,
+                Some(devices::vmgenid::VMGENID_REGION_SIZE),
+            )
+            .ok_or(DeviceManagerError::AllocateMmioAddress)?;
+        let device =
+            devices::VmGenId::new(id.clone(), address, state.map(|state| state.generation_id))
+                .map_err(DeviceManagerError::VmGenIdCreate)?;
+
+        let region = Arc::clone(device.region());
+        // SAFETY: the region is one page of mmap-allocated memory that the device keeps alive
+        // for the lifetime of the VM.
+        unsafe {
+            self.memory_manager
+                .lock()
+                .unwrap()
+                .create_userspace_mapping(
+                    address.0,
+                    devices::vmgenid::VMGENID_REGION_SIZE as usize,
+                    region.as_ptr(),
+                    false,
+                    false,
+                    false,
+                )
+                .map_err(DeviceManagerError::MemoryManager)?;
+        }
+
+        let device = Arc::new(Mutex::new(device));
+        self.device_tree
+            .lock()
+            .unwrap()
+            .insert(id.clone(), device_node!(id, device));
+        Ok(device)
+    }
+
+    /// Gives the guest a new VM generation ID and notifies it through the GED device. Called when
+    /// the VM is restored from a snapshot, before its vCPUs run. Returns whether the VM has the
+    /// device.
+    pub fn new_vm_generation(&self) -> DeviceManagerResult<bool> {
+        let Some(vmgenid) = self.vmgenid_device.as_ref() else {
+            return Ok(false);
+        };
+        vmgenid
+            .lock()
+            .unwrap()
+            .new_generation()
+            .map_err(DeviceManagerError::VmGenIdNewGeneration)?;
+        self.notify_hotplug(AcpiNotificationFlags::VM_GENERATION_CHANGED)?;
+        Ok(true)
+    }
+
     #[cfg(feature = "ivshmem")]
     fn add_ivshmem_device(
         &mut self,
@@ -5386,6 +5473,10 @@ impl Aml for DeviceManager {
         if self.config.lock().unwrap().tpm.is_some() {
             // Add tpm device
             TpmDevice {}.to_aml_bytes(sink);
+        }
+
+        if let Some(vmgenid) = self.vmgenid_device.as_ref() {
+            vmgenid.lock().unwrap().to_aml_bytes(sink);
         }
 
         self.ged_notification_device
