@@ -26,6 +26,7 @@ pub mod pvpanic;
 // TODO: TPM is not yet supported
 #[cfg(not(target_arch = "riscv64"))]
 pub mod tpm;
+pub mod vmgenid;
 
 use bitflags::bitflags;
 
@@ -33,6 +34,7 @@ pub use self::acpi::{AcpiGedDevice, AcpiPmTimerDevice, AcpiShutdownDevice};
 #[cfg(feature = "ivshmem")]
 pub use self::ivshmem::IvshmemDevice;
 pub use self::pvpanic::{PVPANIC_DEVICE_MMIO_SIZE, PvPanicDevice};
+pub use self::vmgenid::VmGenId;
 
 bitflags! {
     pub struct AcpiNotificationFlags: u8 {
@@ -41,6 +43,7 @@ bitflags! {
         const MEMORY_DEVICES_CHANGED = 0b10;
         const PCI_DEVICES_CHANGED = 0b100;
         const POWER_BUTTON_CHANGED = 0b1000;
+        const VM_GENERATION_CHANGED = 0b1_0000;
     }
 }
 

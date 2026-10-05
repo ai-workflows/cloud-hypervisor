@@ -89,6 +89,7 @@ pub struct AcpiGedDevice {
     notification_type: AcpiNotificationFlags,
     ged_irq: u32,
     address: GuestAddress,
+    vm_generation_notify: bool,
 }
 
 impl AcpiGedDevice {
@@ -102,7 +103,14 @@ impl AcpiGedDevice {
             notification_type: AcpiNotificationFlags::NO_DEVICES_CHANGED,
             ged_irq,
             address,
+            vm_generation_notify: false,
         }
+    }
+
+    /// Makes the GED event handler notify the VM generation ID device (`\_SB_.VGEN`) on
+    /// `VM_GENERATION_CHANGED`. Only set when that device is in the DSDT.
+    pub fn enable_vm_generation_notify(&mut self) {
+        self.vm_generation_notify = true;
     }
 
     pub fn notify(
@@ -129,6 +137,18 @@ impl BusDevice for AcpiGedDevice {
 
 impl Aml for AcpiGedDevice {
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
+        // Optional ESCN branch: bit VM_GENERATION_CHANGED notifies the VM generation ID device.
+        let vm_generation_mask = AcpiNotificationFlags::VM_GENERATION_CHANGED.bits() as usize;
+        let vm_generation_and = aml::And::new(&aml::Local(1), &aml::Local(0), &vm_generation_mask);
+        let vm_generation_equal = aml::Equal::new(&aml::Local(1), &vm_generation_mask);
+        let vm_generation_device = aml::Path::new("\\_SB_.VGEN");
+        let vm_generation_notify = aml::Notify::new(&vm_generation_device, &0x80usize);
+        let vm_generation_if = aml::If::new(&vm_generation_equal, vec![&vm_generation_notify]);
+        let vm_generation_scan: Vec<&dyn Aml> = if self.vm_generation_notify {
+            vec![&vm_generation_and, &vm_generation_if]
+        } else {
+            Vec::new()
+        };
         aml::Device::new(
             "_SB_.GEC_".into(),
             vec![
@@ -162,7 +182,7 @@ impl Aml for AcpiGedDevice {
                     0,
                     true,
                     vec![
-                        &aml::Store::new(&aml::Local(0), &aml::Path::new("GDAT")),
+                        &aml::Store::new(&aml::Local(0), &aml::Path::new("GDAT")) as &dyn Aml,
                         &aml::And::new(&aml::Local(1), &aml::Local(0), &aml::ONE),
                         &aml::If::new(
                             &aml::Equal::new(&aml::Local(1), &aml::ONE),
@@ -186,7 +206,10 @@ impl Aml for AcpiGedDevice {
                                 &0x80usize,
                             )],
                         ),
-                    ],
+                    ]
+                    .into_iter()
+                    .chain(vm_generation_scan)
+                    .collect(),
                 ),
             ],
         )
@@ -253,5 +276,97 @@ impl BusDevice for AcpiPmTimerDevice {
         let counter: u32 = (counter & 0xffff_ffff) as u32;
 
         data.copy_from_slice(&counter.to_le_bytes());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use vm_device::interrupt::{InterruptIndex, InterruptSourceConfig};
+
+    use super::*;
+
+    struct TestInterrupt {
+        event_fd: EventFd,
+    }
+
+    impl InterruptSourceGroup for TestInterrupt {
+        fn trigger(&self, _index: InterruptIndex) -> Result<(), std::io::Error> {
+            self.event_fd.write(1)
+        }
+        fn update(
+            &self,
+            _index: InterruptIndex,
+            _config: InterruptSourceConfig,
+            _masked: bool,
+            _set_gsi: bool,
+        ) -> Result<(), std::io::Error> {
+            Ok(())
+        }
+        fn set_gsi(&self) -> Result<(), std::io::Error> {
+            Ok(())
+        }
+        fn notifier(&self, _index: InterruptIndex) -> Option<EventFd> {
+            Some(self.event_fd.try_clone().unwrap())
+        }
+    }
+
+    fn ged() -> (AcpiGedDevice, EventFd) {
+        let event_fd = EventFd::new(0).unwrap();
+        let interrupt = Arc::new(TestInterrupt {
+            event_fd: event_fd.try_clone().unwrap(),
+        });
+        (
+            AcpiGedDevice::new(interrupt, 5, GuestAddress(0xfe00_0000)),
+            event_fd,
+        )
+    }
+
+    fn aml_of(device: &AcpiGedDevice) -> Vec<u8> {
+        let mut aml = Vec::new();
+        device.to_aml_bytes(&mut aml);
+        aml
+    }
+
+    // Notify (\_SB_.VGEN, 0x80): NotifyOp, root, DualNamePrefix, the two segments, then 0x80.
+    const NOTIFY_VGEN: &[u8] = b"\x86\\\x2e_SB_VGEN\x0a\x80";
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    #[test]
+    fn the_vm_generation_branch_is_emitted_only_when_enabled() {
+        let (mut device, _event_fd) = ged();
+        let without = aml_of(&device);
+        assert!(!contains(&without, NOTIFY_VGEN));
+        assert!(!contains(&without, b"VGEN"));
+
+        device.enable_vm_generation_notify();
+        let with = aml_of(&device);
+        assert!(contains(&with, NOTIFY_VGEN));
+        // The new branch tests bit 4 (VM_GENERATION_CHANGED): And (Local0, 0x10, Local1).
+        assert!(contains(&with, b"\x7b\x60\x0a\x10\x61"));
+        // The existing branches are unchanged.
+        assert!(contains(&with, b"PWRB"));
+        assert!(contains(&with, b"CSCN"));
+    }
+
+    #[test]
+    fn a_vm_generation_notification_is_reported_once_and_raises_the_interrupt() {
+        let (mut device, event_fd) = ged();
+        device
+            .notify(AcpiNotificationFlags::VM_GENERATION_CHANGED)
+            .unwrap();
+        assert_eq!(event_fd.read().unwrap(), 1);
+
+        let mut data = [0u8; 1];
+        device.read(0, 0, &mut data);
+        assert_eq!(
+            data[0],
+            AcpiNotificationFlags::VM_GENERATION_CHANGED.bits(),
+            "the guest's ESCN reads the VM generation bit"
+        );
+        device.read(0, 0, &mut data);
+        assert_eq!(data[0], 0, "a read clears the pending notification");
     }
 }

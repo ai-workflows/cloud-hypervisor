@@ -191,6 +191,7 @@ impl RequestHandler for StubApiRequestHandler {
                 vdpa: None,
                 vsock: None,
                 pvpanic: false,
+                vmgenid: false,
                 #[cfg(feature = "pvmemcontrol")]
                 pvmemcontrol: None,
                 iommu: false,

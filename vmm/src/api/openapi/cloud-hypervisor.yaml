@@ -636,6 +636,9 @@ components:
         pvpanic:
           type: boolean
           default: false
+        vmgenid:
+          type: boolean
+          default: false
         pci_segments:
           type: array
           items:
