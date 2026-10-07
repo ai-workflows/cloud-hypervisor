@@ -10,8 +10,10 @@ from that snapshot with the zone mapped private (`shared=off`) and `uffd_handoff
 A test servicer receives the userfaultfd, acknowledges, and answers every MISSING fault with
 UFFDIO_ZEROPAGE.
 
-(a) tmpfs pool: the child resumes. The handoff reports `registered_write_protect=false` and
-    `user_mode_only=false`. Every fault the servicer sees is for a page that is a hole in the
+(a) tmpfs pool: the child resumes, and the handoff reports `user_mode_only=false`. Its
+    `registered_write_protect` is reported, not required: on kernels with uffd-wp PTE markers a
+    private shmem mapping accepts MISSING|WP, and nothing write-faults unless the servicer issues
+    UFFDIO_WRITEPROTECT. Every fault the servicer sees is for a page that is a hole in the
     pool, and the pool's allocated blocks don't grow while the guest writes and reads RAM it
     never touched before. After the acknowledgement the VMM holds no userfaultfd descriptor.
 (c) Then the servicer is killed: the guest keeps running, because with the last descriptor
@@ -266,8 +268,8 @@ def scenario_tmpfs(args: argparse.Namespace, kernel: Path, initramfs: Path, fail
             if metadata is None:
                 failures.append("(a) the servicer never received the handoff")
                 return result
-            if metadata.get("registered_write_protect") is not False:
-                failures.append(f"(a) registered_write_protect is {metadata.get('registered_write_protect')!r}, want false")
+            result["registered_write_protect"] = metadata.get("registered_write_protect")
+            log(f"(a) registered_write_protect={metadata.get('registered_write_protect')!r} (reported)")
             if metadata.get("user_mode_only"):
                 failures.append("(a) the descriptor is user_mode_only: it cannot serve KVM's kernel-mode faults")
             region = metadata["regions"][0]
@@ -382,6 +384,7 @@ def main() -> int:
         tmpfs = results["tmpfs_pool"]
         log(
             f"PASS: {tmpfs['faults']} faults, all pool holes, pool blocks unchanged "
+            f"(write-protect registered: {tmpfs.get('registered_write_protect')}) "
             f"({tmpfs['pool_blocks_before']}); no VMM uffd after the ACK; guest kept running after "
             "the servicer died; a regular-file pool is refused at registration"
         )
