@@ -3066,7 +3066,9 @@ impl Pausable for Vm {
                 .vm
                 .get_clock()
                 .map_err(|e| MigratableError::Pause(anyhow!("Could not get VM clock: {e}")))?;
-            clock.reset_flags();
+            if !clock.has_realtime() {
+                clock.set_realtime(std::time::SystemTime::now());
+            }
             self.saved_clock = Some(clock);
         }
 
@@ -3098,7 +3100,8 @@ impl Pausable for Vm {
             .valid_transition(new_state)
             .map_err(|e| MigratableError::Resume(anyhow!("Invalid transition: {e:?}")))?;
 
-        self.cpu_manager.lock().unwrap().resume()?;
+        // Restore KVM clock BEFORE vCPUs start running, so they see correct
+        // TSC/kvmclock from the first instruction after resume.
         #[cfg(target_arch = "x86_64")]
         {
             if let Some(clock) = &self.saved_clock {
@@ -3115,6 +3118,7 @@ impl Pausable for Vm {
         }
 
         self.device_manager.lock().unwrap().resume()?;
+        self.cpu_manager.lock().unwrap().resume()?;
 
         // And we're back to the Running state.
         self.state = new_state;
