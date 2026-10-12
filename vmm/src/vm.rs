@@ -654,7 +654,12 @@ impl Vm {
         #[cfg(target_arch = "x86_64")]
         let saved_clock = if let Some(snapshot) = snapshot.as_ref() {
             let vm_snapshot = get_vm_snapshot(snapshot).map_err(Error::Restore)?;
-            vm_snapshot.clock
+            // A restore sets the clock exactly as it was saved: advancing it by the time since the
+            // snapshot would move the restored guest's monotonic clock by the snapshot's age.
+            vm_snapshot.clock.map(|mut clock| {
+                clock.reset_flags();
+                clock
+            })
         } else {
             None
         };

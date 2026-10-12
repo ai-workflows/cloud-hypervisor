@@ -152,6 +152,16 @@ pub enum ClockData {
 
 #[cfg(target_arch = "x86_64")]
 impl ClockData {
+    /// Clears the flags, so `KVM_SET_CLOCK` sets the clock exactly as saved (no elapsed advance).
+    pub fn reset_flags(&mut self) {
+        match self {
+            #[cfg(feature = "kvm")]
+            ClockData::Kvm(s) => s.flags = 0,
+            #[allow(unreachable_patterns)]
+            _ => {}
+        }
+    }
+
     pub fn has_realtime(&self) -> bool {
         match self {
             #[cfg(feature = "kvm")]
