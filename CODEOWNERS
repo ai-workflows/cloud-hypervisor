@@ -1,2 +1,7 @@
 # Add the list of code owners here (using their GitHub username)
 * @cloud-hypervisor/cloud-hypervisor-reviewers
+
+# Changes that publish or expose this repository need the owner's review.
+/CODEOWNERS                          @josephvitko
+/.github/workflows/release.yaml      @josephvitko
+/.github/workflows/docker-image.yaml @josephvitko
